@@ -1,24 +1,37 @@
 import requests
 from bs4 import BeautifulSoup
 
-# Send a GET request to the website
-url = 'https://www.fbil.org.in/'
-response = requests.get(url)
+# Send a GET request to the FBIL page
+response = requests.get('https://www.fbil.org.in')
 
-# Parse the HTML content
+# Parse the HTML content of the response
 soup = BeautifulSoup(response.content, 'html.parser')
 
-# Find the "Foreign Exchange" button and get its URL
-foreign_exchange_button = soup.find('a', text='Foreign Exchange')
-foreign_exchange_url = foreign_exchange_button['href']
+# Find the element with the text "FOREIGN EXCHANGE"
+foreign_exchange_element = soup.find('b', text='FOREIGN EXCHANGE')
 
-# Send a GET request to the Foreign Exchange page
-response_fx = requests.get(foreign_exchange_url)
-fx_soup = BeautifulSoup(response_fx.content, 'html.parser')
+# Get the parent <a> tag
+a_tag = foreign_exchange_element.parent
 
-# Find the latest INR/USD rate
-latest_rate_element = fx_soup.find('td', text='INR / 1 USD')
-rate_value = latest_rate_element.find_next_sibling('td').text
+# Extract the href attribute value
+href = a_tag['href']
 
-# Print the rate
-print(rate_value)
+# Construct the complete URL for the FOREIGN EXCHANGE page
+foreign_exchange_url = f'https://www.fbil.org.in{href}'
+
+# Send a GET request to the FOREIGN EXCHANGE page
+foreign_exchange_response = requests.get(foreign_exchange_url)
+
+# Parse the HTML content of the FOREIGN EXCHANGE response
+foreign_exchange_soup = BeautifulSoup(foreign_exchange_response.content, 'html.parser')
+
+# Find the rate for INR / 1 USD
+rate_element = foreign_exchange_soup.find('td', text='INR / 1 USD')
+
+if rate_element:
+    # Get the rate value from the next sibling element
+    rate_value = rate_element.find_next_sibling('td').text.strip()
+
+    print(f"The rate for INR / 1 USD is: {rate_value}")
+else:
+    print("Rate not found")
