@@ -12,6 +12,7 @@ class DataAnonymizer:
     def __init__(self, config_file=None):
         self.mapping_dicts = defaultdict(dict)
         self.column_types = {}
+        self.dictionary_columns = {}  # Для ручной настройки словарных колонок
         self.config_file = config_file
         self.float_precision = {}  # Для хранения точности чисел с плавающей точкой
         
@@ -25,6 +26,7 @@ class DataAnonymizer:
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 self.column_types = config.get('column_types', {})
+                self.dictionary_columns = config.get('dictionary_columns', {})
                 print(f"Загружена конфигурация из {self.config_file}")
         except Exception as e:
             print(f"Ошибка загрузки конфигурации: {e}")
@@ -33,7 +35,12 @@ class DataAnonymizer:
         """Сохраняет конфигурацию в JSON файл"""
         config = {
             'column_types': self.column_types,
-            'columns': list(df.columns)
+            'dictionary_columns': self.dictionary_columns,
+            'columns': list(df.columns),
+            '_comment': {
+                'dictionary_columns': 'true - всегда считать словарным, false - никогда не считать словарным, auto - автоматическое определение',
+                'column_types': 'Типы данных для обработки: uuid, integer, float, alphanumeric, text, date, unknown'
+            }
         }
         
         try:
@@ -42,6 +49,20 @@ class DataAnonymizer:
             print(f"Конфигурация сохранена в {output_file}")
         except Exception as e:
             print(f"Ошибка сохранения конфигурации: {e}")
+    
+    def is_dictionary_column(self, column_name, unique_count):
+        """Определяет, является ли колонка словарной"""
+        # Проверяем ручную настройку из конфигурации
+        if column_name in self.dictionary_columns:
+            setting = self.dictionary_columns[column_name]
+            if setting == 'true':
+                return True
+            elif setting == 'false':
+                return False
+            # Для 'auto' продолжаем автоматическое определение
+        
+        # Автоматическое определение по количеству уникальных значений
+        return unique_count < 100
     
     def detect_float_precision(self, value):
         """Определяет количество знаков после запятой для чисел с плавающей точкой"""
@@ -177,174 +198,4 @@ class DataAnonymizer:
         numbers = ''.join(filter(str.isdigit, value_str))
         
         if value_str not in self.mapping_dicts['alphanumeric']:
-            # Генерируем случайные цифры с тем же количеством знаков
-            if numbers:
-                new_numbers = str(self.anonymize_integer(numbers, len(numbers)))
-            else:
-                new_numbers = ''
-            
-            self.mapping_dicts['alphanumeric'][value_str] = letters + new_numbers
-        
-        return self.mapping_dicts['alphanumeric'][value_str]
-    
-    def anonymize_text(self, value):
-        """Анонимизирует текст/названия"""
-        if pd.isna(value):
-            return value
-        
-        if value not in self.mapping_dicts['text']:
-            # Определяем количество слов в оригинальном тексте
-            word_count = len(str(value).split())
-            self.mapping_dicts['text'][value] = self.generate_random_words(word_count)
-        
-        return self.mapping_dicts['text'][value]
-    
-    def convert_to_string(self, value):
-        """Конвертирует значение в строку с сохранением формата"""
-        if pd.isna(value):
-            return value
-        
-        if isinstance(value, (int, np.integer)):
-            return str(value)
-        elif isinstance(value, (float, np.floating)):
-            # Сохраняем оригинальный формат числа
-            value_str = str(value)
-            if '.' in value_str:
-                # Сохраняем trailing zeros
-                integer_part, decimal_part = value_str.split('.')
-                decimal_part = decimal_part.rstrip('0')
-                if decimal_part:
-                    return f"{integer_part}.{decimal_part}"
-                else:
-                    return integer_part
-            return value_str
-        elif isinstance(value, pd.Timestamp):
-            # Сохраняем дату в оригинальном формате
-            return value.strftime('%Y-%m-%d')
-        else:
-            return str(value)
-    
-    def process_dataframe(self, df, generate_config=False):
-        """Обрабатывает весь DataFrame"""
-        result_df = df.copy()
-        
-        for column in df.columns:
-            # Пропускаем колонки с малым количеством уникальных значений
-            unique_count = df[column].nunique()
-            if unique_count < 100:
-                print(f"Пропускаем колонку '{column}' (словарное значение, {unique_count} уникальных значений)")
-                # Все равно конвертируем в строку для единообразия
-                result_df[column] = df[column].apply(self.convert_to_string)
-                continue
-            
-            # Определяем тип колонки
-            col_type = self.detect_column_type(df[column], column)
-            self.column_types[column] = col_type
-            print(f"Обрабатываем колонку '{column}' как {col_type}")
-            
-            # Применяем соответствующую анонимизацию
-            if col_type == 'uuid':
-                result_df[column] = df[column].apply(self.anonymize_uuid)
-            elif col_type == 'integer':
-                result_df[column] = df[column].apply(lambda x: self.anonymize_integer(x) if pd.notna(x) else x)
-            elif col_type == 'float':
-                result_df[column] = df[column].apply(lambda x: self.anonymize_float(x, column) if pd.notna(x) else x)
-            elif col_type == 'alphanumeric':
-                result_df[column] = df[column].apply(self.anonymize_alphanumeric)
-            elif col_type == 'text':
-                result_df[column] = df[column].apply(self.anonymize_text)
-            elif col_type == 'date':
-                # Для дат конвертируем в строку
-                result_df[column] = df[column].apply(self.convert_to_string)
-            else:
-                # Для неизвестных типов тоже конвертируем в строку
-                result_df[column] = df[column].apply(self.convert_to_string)
-        
-        return result_df
-
-def save_as_text_excel(df, output_file, sheet_name='Sheet1'):
-    """
-    Сохраняет DataFrame в Excel с текстовым форматом всех ячеек
-    """
-    from openpyxl import Workbook
-    from openpyxl.utils.dataframe import dataframe_to_rows
-    from openpyxl.styles import numbers
-    
-    # Создаем новую книгу Excel
-    wb = Workbook()
-    ws = wb.active
-    ws.title = sheet_name
-    
-    # Записываем данные из DataFrame
-    for r in dataframe_to_rows(df, index=False, header=True):
-        ws.append(r)
-    
-    # Устанавливаем текстовый формат для всех ячеек
-    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-        for cell in row:
-            # Устанавливаем текстовый формат
-            cell.number_format = '@'  # Текстовый формат в Excel
-    
-    # Сохраняем файл
-    wb.save(output_file)
-
-def anonymize_excel_file(input_file, output_file, config_file=None, generate_config=False, sheet_name=0):
-    """
-    Анонимизирует Excel файл и сохраняет все значения как текст
-    
-    Parameters:
-    input_file (str): путь к исходному файлу
-    output_file (str): путь для сохранения результата
-    config_file (str): путь к файлу конфигурации
-    generate_config (bool): генерировать ли файл конфигурации
-    sheet_name (str/int): имя или индекс листа
-    """
-    
-    # Читаем Excel файл
-    print(f"Чтение файла: {input_file}")
-    df = pd.read_excel(input_file, sheet_name=sheet_name)
-    
-    # Создаем анонимизатор
-    anonymizer = DataAnonymizer(config_file)
-    
-    # Обрабатываем данные
-    anonymized_df = anonymizer.process_dataframe(df, generate_config)
-    
-    # Сохраняем конфигурацию, если нужно
-    if generate_config and config_file:
-        anonymizer.save_config(df, config_file)
-    
-    # Сохраняем результат с текстовым форматом
-    print(f"Сохранение результата в: {output_file} (все значения как текст)")
-    save_as_text_excel(anonymized_df, output_file)
-    
-    print("Анонимизация завершена успешно!")
-    print(f"Обработано колонок: {len(df.columns)}")
-    print(f"Типы колонок: {anonymizer.column_types}")
-
-# Пример использования
-if __name__ == "__main__":
-    # Укажите пути к вашим файлам
-    input_excel = "sensitive_data.xlsx"  # Ваш исходный файл
-    output_excel = "anonymized_data.xlsx"  # Файл для сохранения результата
-    config_file = "column_config.json"  # Файл конфигурации
-    
-    # Опции
-    generate_config = False  # Установите True для генерации конфигурационного файла
-    
-    try:
-        anonymize_excel_file(
-            input_excel, 
-            output_excel, 
-            config_file=config_file,
-            generate_config=generate_config
-        )
-        print("Готово! Файл успешно анонимизирован.")
-        print("Все значения сохранены как текст для предотвращения автоматического форматирования Excel.")
-        
-        if generate_config:
-            print(f"Конфигурационный файл создан: {config_file}")
-            print("Отредактируйте типы колонок при необходимости и запустите с generate_config=False")
-            
-    except Exception as e:
-        print(f"Произошла ошибка: {e}")
+            # Генерируем
