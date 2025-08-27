@@ -76,7 +76,7 @@ class DataAnonymizer:
         # Генерируем случайное число с таким же количеством цифр
         min_val = 10**(length-1)
         max_val = (10**length) - 1
-        return random.randint(min_val, max_val)
+        return str(random.randint(min_val, max_val))  # Возвращаем как строку
     
     def anonymize_alphanumeric(self, value):
         """Анонимизирует алфавитно-цифровые идентификаторы"""
@@ -112,6 +112,22 @@ class DataAnonymizer:
         
         return self.mapping_dicts['text'][value]
     
+    def convert_to_string(self, value):
+        """Конвертирует значение в строку с сохранением формата"""
+        if pd.isna(value):
+            return value
+        
+        if isinstance(value, (int, np.integer)):
+            return str(value)
+        elif isinstance(value, (float, np.floating)):
+            # Сохраняем плавающую точку как строку без преобразования
+            return str(value)
+        elif isinstance(value, pd.Timestamp):
+            # Сохраняем дату в оригинальном формате
+            return value.strftime('%Y-%m-%d')
+        else:
+            return str(value)
+    
     def process_dataframe(self, df):
         """Обрабатывает весь DataFrame"""
         result_df = df.copy()
@@ -121,6 +137,8 @@ class DataAnonymizer:
             unique_count = df[column].nunique()
             if unique_count < 100:
                 print(f"Пропускаем колонку '{column}' (словарное значение, {unique_count} уникальных значений)")
+                # Все равно конвертируем в строку для единообразия
+                result_df[column] = df[column].apply(self.convert_to_string)
                 continue
             
             # Определяем тип колонки
@@ -137,13 +155,47 @@ class DataAnonymizer:
                 result_df[column] = df[column].apply(self.anonymize_alphanumeric)
             elif col_type == 'text':
                 result_df[column] = df[column].apply(self.anonymize_text)
-            # Для float, date и unknown оставляем как есть
+            elif col_type == 'float':
+                # Для float конвертируем в строку
+                result_df[column] = df[column].apply(self.convert_to_string)
+            elif col_type == 'date':
+                # Для дат конвертируем в строку
+                result_df[column] = df[column].apply(self.convert_to_string)
+            else:
+                # Для неизвестных типов тоже конвертируем в строку
+                result_df[column] = df[column].apply(self.convert_to_string)
         
         return result_df
 
+def save_as_text_excel(df, output_file, sheet_name='Sheet1'):
+    """
+    Сохраняет DataFrame в Excel с текстовым форматом всех ячеек
+    """
+    from openpyxl import Workbook
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    from openpyxl.styles import numbers
+    
+    # Создаем новую книгу Excel
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+    
+    # Записываем данные из DataFrame
+    for r in dataframe_to_rows(df, index=False, header=True):
+        ws.append(r)
+    
+    # Устанавливаем текстовый формат для всех ячеек
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+        for cell in row:
+            # Устанавливаем текстовый формат
+            cell.number_format = '@'  # Текстовый формат в Excel
+    
+    # Сохраняем файл
+    wb.save(output_file)
+
 def anonymize_excel_file(input_file, output_file, sheet_name=0):
     """
-    Анонимизирует Excel файл
+    Анонимизирует Excel файл и сохраняет все значения как текст
     
     Parameters:
     input_file (str): путь к исходному файлу
@@ -159,9 +211,9 @@ def anonymize_excel_file(input_file, output_file, sheet_name=0):
     anonymizer = DataAnonymizer()
     anonymized_df = anonymizer.process_dataframe(df)
     
-    # Сохраняем результат
-    print(f"Сохранение результата в: {output_file}")
-    anonymized_df.to_excel(output_file, index=False)
+    # Сохраняем результат с текстовым форматом
+    print(f"Сохранение результата в: {output_file} (все значения как текст)")
+    save_as_text_excel(anonymized_df, output_file)
     
     print("Анонимизация завершена успешно!")
     print(f"Обработано колонок: {len(df.columns)}")
@@ -176,5 +228,6 @@ if __name__ == "__main__":
     try:
         anonymize_excel_file(input_excel, output_excel)
         print("Готово! Файл успешно анонимизирован.")
+        print("Все значения сохранены как текст для предотвращения автоматического форматирования Excel.")
     except Exception as e:
         print(f"Произошла ошибка: {e}")
